@@ -27,22 +27,39 @@ const fixtureData = {
       label: 'Age',
       datum: 'age',
     },
+    {
+      label: 'Long Field Name',
+      datum: 'longField',
+    },
+    {
+      label: 'Number',
+      datum: 'number',
+    },
   ],
   data: [
     {
       name: 'some name0',
       status: 'some status0',
       age: 'some age0',
+      longField:
+        'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.',
+      number: '22',
     },
     {
       name: 'some name1',
       status: 'some status1',
       age: 'some age1',
+      longField:
+        'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.',
+      number: '33',
     },
     {
       name: 'some name2',
       status: 'some status2',
       age: 'some age2',
+      longField:
+        'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.',
+      number: '44',
     },
   ],
   defaultSortingColumn: 1,
@@ -67,6 +84,16 @@ Getter.args = {
       // datum: "",
       getter: (row: any) => row.age,
     },
+    {
+      label: 'Long Field Name',
+      // datum: "",
+      getter: (row: any) => row.longField,
+    },
+    {
+      label: 'Number',
+      // datum: "",
+      getter: (row: any) => row.number,
+    },
   ],
 };
 
@@ -85,6 +112,10 @@ Datum.args = {
     {
       label: 'Age',
       datum: 'age',
+    },
+    {
+      label: 'Long Field Name',
+      datum: 'longField',
     },
   ],
 };
