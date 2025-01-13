@@ -1,84 +1,235 @@
-import _ from 'lodash';
+import { Icon } from '@iconify/react';
+import { Box } from '@mui/material';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { ApiError } from '../../lib/k8s/apiProxy';
 import Pod from '../../lib/k8s/pod';
-import { useFilterFunc } from '../../lib/util';
-import { SectionFilterHeader } from '../common';
+import { timeAgo } from '../../lib/util';
+import { useNamespaces } from '../../redux/filterSlice';
+import { HeadlampEventType, useEventCallback } from '../../redux/headlampEventSlice';
+import { LightTooltip, Link, SimpleTableProps } from '../common';
 import { StatusLabel, StatusLabelProps } from '../common/Label';
-import Link from '../common/Link';
-import { SectionBox } from '../common/SectionBox';
-import SimpleTable from '../common/SimpleTable';
+import ResourceListView from '../common/Resource/ResourceListView';
+import { ResourceTableProps } from '../common/Resource/ResourceTable';
 
 export function makePodStatusLabel(pod: Pod) {
   const phase = pod.status.phase;
   let status: StatusLabelProps['status'] = '';
 
+  const { reason, message: tooltip } = pod.getDetailedStatus();
+
   if (phase === 'Failed') {
     status = 'error';
   } else if (phase === 'Succeeded' || phase === 'Running') {
-    status = 'success';
-  }
-
-  return <StatusLabel status={status}>{phase}</StatusLabel>;
-}
-
-export default function PodList() {
-  const [pods, error] = Pod.useList();
-  const filterFunc = useFilterFunc();
-  const { t } = useTranslation('glossary');
-
-  function getRestartCount(pod: Pod) {
-    if (!pod) {
-      return 0;
+    const readyCondition = pod.status.conditions.find(condition => condition.type === 'Ready');
+    if (readyCondition?.status === 'True' || phase === 'Succeeded') {
+      status = 'success';
+    } else {
+      status = 'warning';
     }
-    return _.sumBy(pod.status.containerStatuses, container => container.restartCount);
   }
 
   return (
-    <SectionBox title={<SectionFilterHeader title={t('Pods')} />}>
-      <SimpleTable
-        rowsPerPage={[15, 25, 50]}
-        filterFunction={filterFunc}
-        errorMessage={Pod.getErrorMessage(error)}
-        columns={[
-          {
-            label: t('frequent|Name'),
-            getter: pod => <Link kubeObject={pod} />,
-            sort: (p1: Pod, p2: Pod) => {
-              if (p1.metadata.name < p2.metadata.name) {
-                return -1;
-              } else if (p1.metadata.name > p2.metadata.name) {
-                return 1;
-              }
-              return 0;
-            },
+    <LightTooltip title={tooltip} interactive>
+      <Box display="inline">
+        <StatusLabel status={status}>
+          {reason}
+          {(status === 'warning' || status === 'error') && (
+            <Icon aria-label="hidden" icon="mdi:alert-outline" width="1.2rem" height="1.2rem" />
+          )}
+        </StatusLabel>
+      </Box>
+    </LightTooltip>
+  );
+}
+
+function getReadinessGatesStatus(pods: Pod) {
+  const readinessGates = pods?.spec?.readinessGates?.map(gate => gate.conditionType) || [];
+  const readinessGatesMap: { [key: string]: string } = {};
+  if (readinessGates.length === 0) {
+    return readinessGatesMap;
+  }
+
+  pods?.status?.conditions?.forEach(condition => {
+    if (readinessGates.includes(condition.type)) {
+      readinessGatesMap[condition.type] = condition.status;
+    }
+  });
+
+  return readinessGatesMap;
+}
+
+export interface PodListProps {
+  pods: Pod[] | null;
+  error: ApiError | null;
+  hideColumns?: ('namespace' | 'restarts')[];
+  reflectTableInURL?: SimpleTableProps['reflectInURL'];
+  noNamespaceFilter?: boolean;
+  clusterErrors?: ResourceTableProps<Pod>['clusterErrors'];
+}
+
+export function PodListRenderer(props: PodListProps) {
+  const {
+    pods,
+    error,
+    hideColumns = [],
+    reflectTableInURL = 'pods',
+    noNamespaceFilter,
+    clusterErrors,
+  } = props;
+  const { t } = useTranslation(['glossary', 'translation']);
+
+  return (
+    <ResourceListView
+      title={t('Pods')}
+      headerProps={{
+        noNamespaceFilter,
+      }}
+      hideColumns={hideColumns}
+      errorMessage={Pod.getErrorMessage(error)}
+      columns={[
+        'name',
+        'namespace',
+        'cluster',
+        {
+          label: t('Restarts'),
+          getValue: pod => {
+            const { restarts, lastRestartDate } = pod.getDetailedStatus();
+            return lastRestartDate.getTime() !== 0
+              ? t('{{ restarts }} ({{ abbrevTime }} ago)', {
+                  restarts: restarts,
+                  abbrevTime: timeAgo(lastRestartDate, { format: 'mini' }),
+                })
+              : restarts;
           },
-          {
-            label: t('glossary|Namespace'),
-            getter: (pod: Pod) => pod.getNamespace(),
-            sort: true,
+        },
+        {
+          id: 'ready',
+          label: t('translation|Ready'),
+          getValue: pod => {
+            const podRow = pod.getDetailedStatus();
+            return `${podRow.readyContainers}/${podRow.totalContainers}`;
           },
-          {
-            label: t('Restarts'),
-            getter: (pod: Pod) => getRestartCount(pod),
-            sort: true,
+        },
+        {
+          id: 'status',
+          label: t('translation|Status'),
+          getValue: pod => pod.getDetailedStatus().reason,
+          render: makePodStatusLabel,
+        },
+        {
+          id: 'ip',
+          label: t('glossary|IP'),
+          getValue: pod => pod.status?.podIP ?? '',
+        },
+        {
+          id: 'node',
+          label: t('glossary|Node'),
+          getValue: pod => pod?.spec?.nodeName,
+          render: pod =>
+            pod?.spec?.nodeName && (
+              <Link routeName="node" params={{ name: pod.spec.nodeName }} tooltip>
+                {pod.spec.nodeName}
+              </Link>
+            ),
+        },
+        {
+          id: 'nominatedNode',
+          label: t('glossary|Nominated Node'),
+          getValue: pod => pod?.status?.nominatedNodeName,
+          render: pod =>
+            !!pod?.status?.nominatedNodeName && (
+              <Link routeName="node" params={{ name: pod?.status?.nominatedNodeName }} tooltip>
+                {pod?.status?.nominatedNodeName}
+              </Link>
+            ),
+          show: false,
+        },
+        {
+          id: 'readinessGates',
+          label: t('glossary|Readiness Gates'),
+          getValue: pod => {
+            const readinessGatesStatus = getReadinessGatesStatus(pod);
+            const total = Object.keys(readinessGatesStatus).length;
+
+            if (total === 0) {
+              return '';
+            }
+
+            const statusTrueCount = Object.values(readinessGatesStatus).filter(
+              status => status === 'True'
+            ).length;
+
+            return statusTrueCount;
           },
-          {
-            label: t('Status'),
-            getter: makePodStatusLabel,
-            sort: (pod: Pod) => pod?.status.phase,
+          render: pod => {
+            const readinessGatesStatus = getReadinessGatesStatus(pod);
+            const total = Object.keys(readinessGatesStatus).length;
+
+            if (total === 0) {
+              return null;
+            }
+
+            const statusTrueCount = Object.values(readinessGatesStatus).filter(
+              status => status === 'True'
+            ).length;
+
+            return (
+              <LightTooltip
+                title={Object.keys(readinessGatesStatus)
+                  .map(conditionType => `${conditionType}: ${readinessGatesStatus[conditionType]}`)
+                  .join('\n')}
+                interactive
+              >
+                <span>{`${statusTrueCount}/${total}`}</span>
+              </LightTooltip>
+            );
           },
-          {
-            label: t('frequent|Age'),
-            getter: (pod: Pod) => pod.getAge(),
-            sort: (p1: Pod, p2: Pod) =>
-              new Date(p2.metadata.creationTimestamp).getTime() -
-              new Date(p1.metadata.creationTimestamp).getTime(),
+          sort: (p1: Pod, p2: Pod) => {
+            const readinessGatesStatus1 = getReadinessGatesStatus(p1);
+            const readinessGatesStatus2 = getReadinessGatesStatus(p2);
+            const total1 = Object.keys(readinessGatesStatus1).length;
+            const total2 = Object.keys(readinessGatesStatus2).length;
+
+            if (total1 !== total2) {
+              return total1 - total2;
+            }
+
+            const statusTrueCount1 = Object.values(readinessGatesStatus1).filter(
+              status => status === 'True'
+            ).length;
+            const statusTrueCount2 = Object.values(readinessGatesStatus2).filter(
+              status => status === 'True'
+            ).length;
+
+            return statusTrueCount1 - statusTrueCount2;
           },
-        ]}
-        data={pods}
-        defaultSortingColumn={5}
-      />
-    </SectionBox>
+          show: false,
+        },
+        'age',
+      ]}
+      data={pods}
+      reflectInURL={reflectTableInURL}
+      clusterErrors={clusterErrors}
+      id="headlamp-pods"
+    />
+  );
+}
+
+export default function PodList() {
+  const { items, error, clusterErrors } = Pod.useList({ namespace: useNamespaces() });
+
+  const dispatchHeadlampEvent = useEventCallback(HeadlampEventType.LIST_VIEW);
+
+  React.useEffect(() => {
+    dispatchHeadlampEvent({
+      resources: items ?? [],
+      resourceKind: 'Pod',
+      error: error || undefined,
+    });
+  }, [items, error]);
+
+  return (
+    <PodListRenderer pods={items} error={error} clusterErrors={clusterErrors} reflectTableInURL />
   );
 }

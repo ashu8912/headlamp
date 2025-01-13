@@ -1,16 +1,74 @@
-import React from 'react';
+import { Icon } from '@iconify/react';
+import { Box } from '@mui/material';
 import { useTranslation } from 'react-i18next';
+import { KubeContainer } from '../../lib/k8s/cluster';
 import Job from '../../lib/k8s/job';
-import { useFilterFunc } from '../../lib/util';
-import { Link } from '../common';
-import { SectionBox } from '../common/SectionBox';
-import SectionFilterHeader from '../common/SectionFilterHeader';
-import SimpleTable from '../common/SimpleTable';
+import { formatDuration } from '../../lib/util';
+import { useNamespaces } from '../../redux/filterSlice';
+import { LightTooltip, SimpleTableProps, StatusLabel, StatusLabelProps } from '../common';
+import ResourceListView from '../common/Resource/ResourceListView';
+
+export function makeJobStatusLabel(job: Job) {
+  if (!job?.status?.conditions) {
+    return null;
+  }
+
+  const conditionOptions = {
+    Failed: {
+      status: 'error',
+      icon: 'mdi:alert-outline',
+    },
+    Complete: {
+      status: 'success',
+      icon: 'mdi:check-bold',
+    },
+    Suspended: {
+      status: '',
+      icon: 'mdi:pause',
+    },
+  };
+
+  const condition = job.status.conditions.find(
+    ({ status, type }: { status: string; type: string }) =>
+      type in conditionOptions && status === 'True'
+  );
+
+  if (!condition) {
+    return null;
+  }
+
+  const tooltip = '';
+
+  const conditionInfo = conditionOptions[(condition.type as 'Complete' | 'Failed') || 'Suspended'];
+
+  return (
+    <LightTooltip title={tooltip} interactive>
+      <Box display="inline">
+        <StatusLabel status={conditionInfo.status as StatusLabelProps['status']}>
+          {condition.type}
+          <Icon aria-label="hidden" icon={conditionInfo.icon} width="1.2rem" height="1.2rem" />
+        </StatusLabel>
+      </Box>
+    </LightTooltip>
+  );
+}
 
 export default function JobsList() {
-  const [jobs, error] = Job.useList();
-  const filterFunc = useFilterFunc();
-  const { t } = useTranslation('glossary');
+  const [jobs, error] = Job.useList({ namespace: useNamespaces() });
+  return <JobsListRenderer jobs={jobs} error={Job.getErrorMessage(error)} reflectTableInURL />;
+}
+
+export interface JobsListRendererProps {
+  jobs: Job[] | null;
+  error: string | null;
+  hideColumns?: 'namespace'[];
+  reflectTableInURL?: SimpleTableProps['reflectInURL'];
+  noNamespaceFilter?: boolean;
+}
+
+export function JobsListRenderer(props: JobsListRendererProps) {
+  const { jobs, error, hideColumns = [], reflectTableInURL = 'jobs', noNamespaceFilter } = props;
+  const { t } = useTranslation(['glossary', 'translation']);
 
   function getCompletions(job: Job) {
     return `${job.spec.completions}/${job.spec.parallelism}`;
@@ -24,59 +82,88 @@ export default function JobsList() {
     return parallelismSorted;
   }
 
-  function getCondition(job: Job) {
-    const { conditions } = job.status;
-    if (!conditions) {
-      return null;
-    }
-
-    return conditions.find(({ status }: { status: string }) => status === 'True').type;
-  }
-
   return (
-    <SectionBox title={<SectionFilterHeader title={t('Jobs')} />}>
-      <SimpleTable
-        rowsPerPage={[15, 25, 50]}
-        filterFunction={filterFunc}
-        errorMessage={Job.getErrorMessage(error)}
-        columns={[
-          {
-            label: t('frequent|Name'),
-            getter: job => <Link kubeObject={job} />,
-            sort: (j1: Job, j2: Job) => {
-              if (j1.metadata.name < j2.metadata.name) {
-                return -1;
-              } else if (j1.metadata.name > j2.metadata.name) {
-                return 1;
-              }
-              return 0;
-            },
+    <ResourceListView
+      title={t('Jobs')}
+      headerProps={{
+        noNamespaceFilter,
+      }}
+      hideColumns={hideColumns}
+      errorMessage={error}
+      columns={[
+        'name',
+        'namespace',
+        'cluster',
+        {
+          id: 'completions',
+          label: t('Completions'),
+          getValue: job => getCompletions(job),
+          sort: sortByCompletions,
+        },
+        {
+          id: 'conditions',
+          label: t('translation|Conditions'),
+          getValue: job =>
+            job.status?.conditions?.find(({ status }: { status: string }) => status === 'True') ??
+            null,
+          render: job => makeJobStatusLabel(job),
+        },
+        {
+          id: 'duration',
+          label: t('translation|Duration'),
+          getValue: job => {
+            const duration = job.getDuration();
+            if (duration > 0) {
+              return formatDuration(duration, { format: 'mini' });
+            }
+            return '-';
           },
-          {
-            label: t('glossary|Namespace'),
-            getter: job => job.getNamespace(),
-            sort: true,
+          sort: (job1, job2) => job1.getDuration() - job2.getDuration(),
+          gridTemplate: 0.6,
+        },
+        {
+          id: 'containers',
+          label: t('Containers'),
+          getValue: job =>
+            job
+              .getContainers()
+              .map(c => c.name)
+              .join(''),
+          render: job => {
+            const containerNames = job.getContainers().map((c: KubeContainer) => c.name);
+            const containerTooltip = containerNames.join('\n');
+            const containerText = containerNames.join(', ');
+            return (
+              <LightTooltip title={containerTooltip} interactive>
+                {containerText}
+              </LightTooltip>
+            );
           },
-          {
-            label: t('Completions'),
-            getter: job => getCompletions(job),
-            sort: sortByCompletions,
+        },
+        {
+          id: 'images',
+          label: t('Images'),
+          getValue: job =>
+            job
+              .getContainers()
+              .map(c => c.image)
+              .join(''),
+          render: job => {
+            const containerImages = job.getContainers().map((c: KubeContainer) => c.image);
+            const containerTooltip = containerImages.join('\n');
+            const containerText = containerImages.join(', ');
+            return (
+              <LightTooltip title={containerTooltip} interactive>
+                {containerText}
+              </LightTooltip>
+            );
           },
-          {
-            label: t('Conditions'),
-            getter: job => getCondition(job),
-          },
-          {
-            label: t('frequent|Age'),
-            getter: job => job.getAge(),
-            sort: (j1: Job, j2: Job) =>
-              new Date(j2.metadata.creationTimestamp).getTime() -
-              new Date(j1.metadata.creationTimestamp).getTime(),
-          },
-        ]}
-        data={jobs}
-        defaultSortingColumn={5}
-      />
-    </SectionBox>
+        },
+        'age',
+      ]}
+      data={jobs}
+      reflectInURL={reflectTableInURL}
+      id="headlamp-jobs"
+    />
   );
 }

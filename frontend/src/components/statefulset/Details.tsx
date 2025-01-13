@@ -1,12 +1,17 @@
-import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import { StringDict } from '../../lib/k8s/cluster';
 import StatefulSet from '../../lib/k8s/statefulSet';
-import { DetailsGrid, MetadataDictGrid } from '../common/Resource';
+import {
+  ContainersSection,
+  DetailsGrid,
+  MetadataDictGrid,
+  OwnedPodsSection,
+} from '../common/Resource';
 
-export default function StatefulSetDetails() {
-  const { namespace, name } = useParams<{ namespace: string; name: string }>();
+export default function StatefulSetDetails(props: { name?: string; namespace?: string }) {
+  const params = useParams<{ namespace: string; name: string }>();
+  const { name = params.name, namespace = params.namespace } = props;
   const { t } = useTranslation('glossary');
 
   return (
@@ -14,6 +19,7 @@ export default function StatefulSetDetails() {
       resourceType={StatefulSet}
       name={name}
       namespace={namespace}
+      withEvents
       extraInfo={item =>
         item && [
           {
@@ -23,6 +29,18 @@ export default function StatefulSetDetails() {
           {
             name: t('Selector'),
             value: <MetadataDictGrid dict={item.spec.selector.matchLabels as StringDict} />,
+          },
+        ]
+      }
+      extraSections={item =>
+        item && [
+          {
+            id: 'headlamp.statefulset-owned-pods',
+            section: <OwnedPodsSection resource={item?.jsonData} />,
+          },
+          {
+            id: 'headlamp.statefulset-containers',
+            section: <ContainersSection resource={item?.jsonData} />,
           },
         ]
       }

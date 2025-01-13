@@ -1,117 +1,104 @@
-import kubernetesIcon from '@iconify/icons-mdi/kubernetes';
-import { Icon } from '@iconify/react';
-import Button from '@material-ui/core/Button';
-import ButtonBase from '@material-ui/core/ButtonBase';
-import Card from '@material-ui/core/Card';
-import CardContent from '@material-ui/core/CardContent';
-import Dialog, { DialogProps } from '@material-ui/core/Dialog';
-import DialogContent from '@material-ui/core/DialogContent';
-import DialogContentText from '@material-ui/core/DialogContentText';
-import DialogTitle from '@material-ui/core/DialogTitle';
-import Grid from '@material-ui/core/Grid';
-import { makeStyles, useTheme } from '@material-ui/core/styles';
-import SvgIcon from '@material-ui/core/SvgIcon';
-import Typography from '@material-ui/core/Typography';
-import useMediaQuery from '@material-ui/core/useMediaQuery';
-import React, { PropsWithChildren } from 'react';
+import { Icon, InlineIcon } from '@iconify/react';
+import { DialogActions, IconButton } from '@mui/material';
+import Autocomplete from '@mui/material/Autocomplete';
+import Box from '@mui/material/Box';
+import ButtonBase from '@mui/material/ButtonBase';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import Container from '@mui/material/Container';
+import Dialog, { DialogProps } from '@mui/material/Dialog';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import Grid from '@mui/material/Grid';
+import { useTheme } from '@mui/material/styles';
+import TextField from '@mui/material/TextField';
+import Typography from '@mui/material/Typography';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import _ from 'lodash';
+import React, { isValidElement, PropsWithChildren } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
-import { Trans, useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
+import { useDispatch } from 'react-redux';
 import { generatePath } from 'react-router';
 import { useHistory } from 'react-router-dom';
-import { useCluster, useClustersConf } from '../../lib/k8s';
+import helpers from '../../helpers';
+import { useClustersConf } from '../../lib/k8s';
 import { Cluster } from '../../lib/k8s/cluster';
+import { createRouteURL } from '../../lib/router';
 import { getCluster, getClusterPrefixedPath } from '../../lib/util';
-import { ReactComponent as LogoLight } from '../../resources/logo-light.svg';
+import { setVersionDialogOpen } from '../../redux/actions/actions';
+import { useTypedSelector } from '../../redux/reducers/reducers';
+import { AppLogo } from '../App/AppLogo';
+import ActionButton from '../common/ActionButton';
+import { DialogTitle } from '../common/Dialog';
+import ErrorBoundary from '../common/ErrorBoundary';
 import Loader from '../common/Loader';
-
-const useClusterTitleStyle = makeStyles(theme => ({
-  button: {
-    backgroundColor: theme.palette.sidebarBg,
-    color: theme.palette.primary.contrastText,
-    '&:hover': {
-      color: theme.palette.text.primary,
-    },
-  },
-}));
+import ClusterChooser from './ClusterChooser';
+import ClusterChooserPopup from './ClusterChooserPopup';
 
 export interface ClusterTitleProps {
   clusters?: {
     [clusterName: string]: Cluster;
   };
   cluster?: string;
+  onClick?: (event?: React.MouseEvent<HTMLButtonElement, MouseEvent>) => void;
 }
 
 export function ClusterTitle(props: ClusterTitleProps) {
-  const classes = useClusterTitleStyle();
-  const cluster = props.cluster || useCluster();
-  const clusters = props.clusters || useClustersConf();
-  const [showChooser, setShowChooser] = React.useState(false);
+  const { cluster, clusters, onClick } = props;
+  const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const arePluginsLoaded = useTypedSelector(state => state.plugins.loaded);
+  const ChooserButton = useTypedSelector(state => state.ui.clusterChooserButtonComponent);
 
-  useHotkeys('ctrl+shift+l', () => setShowChooser(true));
+  useHotkeys(
+    'ctrl+shift+l',
+    () => {
+      setAnchorEl(buttonRef.current);
+    },
+    { preventDefault: true }
+  );
 
   if (!cluster) {
     return null;
   }
 
-  if (Object.keys(clusters || {}).length <= 1) {
+  if (!arePluginsLoaded || _.isNull(ChooserButton)) {
+    return null;
+  }
+
+  if (!ChooserButton && Object.keys(clusters || {}).length <= 1) {
     return null;
   }
 
   return (
-    <React.Fragment>
-      <Button
-        size="large"
-        variant="contained"
-        onClick={() => setShowChooser(true)}
-        className={classes.button}
-      >
-        <Trans ns="cluster">Cluster: {{ cluster }}</Trans>
-      </Button>
-      <Chooser open={showChooser} onClose={() => setShowChooser(false)} />
-    </React.Fragment>
+    <ErrorBoundary>
+      {ChooserButton ? (
+        isValidElement(ChooserButton) ? (
+          ChooserButton
+        ) : (
+          <ChooserButton
+            clickHandler={e => {
+              onClick && onClick(e);
+              e?.currentTarget && setAnchorEl(e.currentTarget);
+            }}
+            cluster={cluster}
+          />
+        )
+      ) : (
+        <ClusterChooser
+          ref={buttonRef}
+          clickHandler={e => {
+            onClick && onClick(e);
+            e?.currentTarget && setAnchorEl(e.currentTarget);
+          }}
+          cluster={cluster}
+        />
+      )}
+      <ClusterChooserPopup anchor={anchorEl} onClose={() => setAnchorEl(null)} />
+    </ErrorBoundary>
   );
 }
-
-const useStyles = makeStyles(theme => ({
-  chooserDialog: {
-    [theme.breakpoints.up('sm')]: {
-      minWidth: 500,
-    },
-    '& .MuiTypography-h4': {
-      textAlign: 'center',
-      fontSize: '2.2rem',
-      color: theme.palette.primaryColor,
-      paddingTop: theme.spacing(3),
-      paddingBottom: theme.spacing(3),
-    },
-  },
-  chooserDialogCover: {
-    background: theme.palette.common.black,
-  },
-  logo: {
-    height: '28px',
-    width: '100%',
-    marginLeft: 'auto',
-    marginRight: 'auto',
-  },
-  chooserTitle: {
-    background: theme.palette.common.black,
-    textAlign: 'center',
-    alignItems: 'center',
-    display: 'flex',
-  },
-}));
-
-const useClusterButtonStyles = makeStyles({
-  root: {
-    width: 150,
-    height: 160,
-    paddingTop: '15%',
-  },
-  content: {
-    textAlign: 'center',
-  },
-});
 
 interface ClusterButtonProps extends PropsWithChildren<{}> {
   cluster: Cluster;
@@ -120,16 +107,36 @@ interface ClusterButtonProps extends PropsWithChildren<{}> {
 }
 
 function ClusterButton(props: ClusterButtonProps) {
-  const classes = useClusterButtonStyles();
   const theme = useTheme();
   const { cluster, onClick = undefined, focusedRef } = props;
 
   return (
     <ButtonBase focusRipple ref={focusedRef} onClick={onClick}>
-      <Card className={classes.root}>
-        <CardContent className={classes.content}>
-          <Icon icon={kubernetesIcon} width="50" height="50" color={theme.palette.primaryColor} />
-          <Typography color="textSecondary" gutterBottom>
+      <Card
+        sx={{
+          width: 128,
+          height: 115,
+          paddingTop: '10%',
+        }}
+      >
+        <CardContent
+          sx={{
+            textAlign: 'center',
+            paddingTop: 0,
+          }}
+        >
+          <Icon icon="mdi:kubernetes" width="50" height="50" color={theme.palette.primaryColor} />
+          <Typography
+            color="textSecondary"
+            gutterBottom
+            sx={{
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              display: 'block',
+            }}
+            title={cluster.name}
+          >
             {cluster.name}
           </Typography>
         </CardContent>
@@ -145,24 +152,94 @@ interface ClusterListProps {
 
 function ClusterList(props: ClusterListProps) {
   const { clusters, onButtonClick } = props;
-  const focusedRef = React.useCallback(node => {
+  const theme = useTheme();
+  const focusedRef = React.useCallback((node: HTMLElement) => {
     if (node !== null) {
       node.focus();
     }
   }, []);
+  const { t } = useTranslation();
+  const recentClustersLabelId = 'recent-clusters-label';
+  const maxRecentClusters = 3;
+  // We slice it here for the maximum recent clusters just for extra safety, since this
+  // is an entry point to the rest of the functionality
+  const recentClusterNames = helpers.getRecentClusters().slice(0, maxRecentClusters);
+
+  let recentClusters: Cluster[] = [];
+
+  // If we have more than the maximum number of recent clusters allowed, we show the most
+  // recent ones. Otherwise, just show the clusters in the order they are received.
+  if (clusters.length > maxRecentClusters) {
+    // Get clusters matching the recent cluster names, if they exist still.
+    recentClusters = recentClusterNames
+      .map(name => clusters.find(cluster => cluster.name === name))
+      .filter(item => !!item) as Cluster[];
+    // See whether we need to fill with new clusters (when the recent clusters were less than the
+    // maximum/wanted).
+    const neededClusters = maxRecentClusters - recentClusters.length;
+    if (neededClusters > 0) {
+      recentClusters = recentClusters.concat(
+        clusters.filter(item => !recentClusters.includes(item)).slice(0, neededClusters)
+      );
+    }
+  } else {
+    recentClusters = clusters;
+  }
 
   return (
-    <Grid container alignItems="center" justify="space-around" spacing={2}>
-      {clusters.map((cluster, i) => (
-        <Grid item key={cluster.name}>
-          <ClusterButton
-            focusedRef={i === 0 ? focusedRef : undefined}
-            cluster={cluster}
-            onClick={() => onButtonClick(cluster)}
-          />
+    <Container style={{ maxWidth: '500px', paddingBottom: theme.spacing(2) }}>
+      <Grid
+        container
+        direction="column"
+        alignItems="stretch"
+        justifyContent="space-between"
+        spacing={4}
+      >
+        {recentClusters.length !== clusters.length && (
+          <Grid item>
+            <Typography align="center" id={recentClustersLabelId}>
+              {t('translation|Recent clusters')}
+            </Typography>
+          </Grid>
+        )}
+        <Grid
+          aria-labelledby={`#${recentClustersLabelId}`}
+          item
+          container
+          alignItems="center"
+          justifyContent={clusters.length > maxRecentClusters ? 'space-between' : 'center'}
+          spacing={2}
+        >
+          {recentClusters.map((cluster, i) => (
+            <Grid item key={cluster.name}>
+              <ClusterButton
+                focusedRef={i === 0 ? focusedRef : undefined}
+                cluster={cluster}
+                onClick={() => onButtonClick(cluster)}
+              />
+            </Grid>
+          ))}
         </Grid>
-      ))}
-    </Grid>
+        {clusters.length > 3 && (
+          <Grid item xs={12}>
+            <Autocomplete
+              id="cluster-selector-autocomplete"
+              options={clusters}
+              getOptionLabel={option => option.name}
+              style={{ width: '100%' }}
+              disableClearable
+              autoComplete
+              includeInputInList
+              openOnFocus
+              renderInput={params => (
+                <TextField {...params} label={t('translation|All clusters')} variant="outlined" />
+              )}
+              onChange={(_event, cluster) => onButtonClick(cluster)}
+            />
+          </Grid>
+        )}
+      </Grid>
+    </Container>
   );
 }
 
@@ -170,15 +247,24 @@ interface ClusterDialogProps extends PropsWithChildren<Omit<DialogProps, 'open' 
   open?: boolean;
   onClose?: (() => void) | null;
   useCover?: boolean;
+  showInfoButton?: boolean;
 }
 
 export function ClusterDialog(props: ClusterDialogProps) {
-  const classes = useStyles();
   const theme = useTheme();
+  const { t } = useTranslation();
   const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
-  const { open, onClose = null, useCover = false, children = [], ...otherProps } = props;
+  const {
+    open,
+    onClose = null,
+    useCover = false,
+    showInfoButton = true,
+    children = [],
+    ...otherProps
+  } = props;
   // Only used if open is not provided
   const [show, setShow] = React.useState(true);
+  const dispatch = useDispatch();
 
   function handleClose() {
     if (onClose !== null) {
@@ -197,13 +283,61 @@ export function ClusterDialog(props: ClusterDialogProps) {
       fullScreen={fullScreen}
       open={open !== undefined ? open : show}
       onClose={handleClose}
-      className={useCover ? classes.chooserDialogCover : ''}
+      sx={
+        useCover
+          ? {
+              background: theme.palette.common.black,
+            }
+          : {}
+      }
       {...otherProps}
     >
-      <DialogTitle className={classes.chooserTitle} disableTypography>
-        <SvgIcon className={classes.logo} component={LogoLight} viewBox="0 0 175 32" />
+      <DialogTitle
+        sx={{
+          textAlign: 'center',
+          alignItems: 'center',
+          display: 'flex',
+        }}
+        buttons={[
+          showInfoButton && (
+            <IconButton
+              aria-label={t('Show build information')}
+              onClick={() => {
+                handleClose();
+                dispatch(setVersionDialogOpen(true));
+              }}
+              size="small"
+            >
+              <InlineIcon icon={'mdi:information-outline'} />
+            </IconButton>
+          ),
+        ]}
+      >
+        <AppLogo
+          logoType={'large'}
+          sx={{
+            height: '32px',
+            width: 'auto',
+          }}
+        />
       </DialogTitle>
-      <DialogContent className={classes.chooserDialog}>{children}</DialogContent>
+      <DialogContent
+        dividers
+        sx={{
+          [theme.breakpoints.up('sm')]: {
+            minWidth: 500,
+          },
+          '& .MuiTypography-h4': {
+            textAlign: 'center',
+            fontSize: '2.2rem',
+            color: theme.palette.primaryColor,
+            paddingTop: theme.spacing(3),
+            paddingBottom: theme.spacing(3),
+          },
+        }}
+      >
+        {children}
+      </DialogContent>
     </Dialog>
   );
 }
@@ -214,7 +348,7 @@ function Chooser(props: ClusterDialogProps) {
   const { open = null, onClose, children = [], ...otherProps } = props;
   // Only used if open is not provided
   const [show, setShow] = React.useState(props.open);
-  const { t } = useTranslation('cluster');
+  const { t } = useTranslation();
 
   React.useEffect(
     () => {
@@ -235,6 +369,7 @@ function Chooser(props: ClusterDialogProps) {
 
   function handleButtonClick(cluster: Cluster) {
     if (cluster.name !== getCluster()) {
+      helpers.setRecentCluster(cluster);
       history.push({
         pathname: generatePath(getClusterPrefixedPath(), {
           cluster: cluster.name,
@@ -260,40 +395,71 @@ function Chooser(props: ClusterDialogProps) {
   }
 
   const clusterList = Object.values(clusters || {});
+  if (!show) {
+    return null;
+  }
 
   return (
-    <ClusterDialog
-      open={show}
-      onClose={onClose || handleClose}
-      aria-labelledby="chooser-dialog-title"
-      aria-busy={clusterList.length === 0 && clusters === null}
-      {...otherProps}
-    >
-      <DialogTitle id="chooser-dialog-title">{t('Choose a cluster')}</DialogTitle>
+    <Box component="main">
+      <ClusterDialog
+        open={show}
+        onClose={onClose || handleClose}
+        aria-labelledby="chooser-dialog-title"
+        aria-busy={clusterList.length === 0 && clusters === null}
+        {...otherProps}
+      >
+        <DialogTitle id="chooser-dialog-title" focusTitle>
+          {t('Choose a cluster')}
+        </DialogTitle>
 
-      {clusterList.length === 0 ? (
-        <React.Fragment>
-          {clusters === null ? (
-            <>
-              <DialogContentText>{t('Wait while fetching clusters…')}</DialogContentText>
-              <Loader title={t('Loading cluster information')} />
-            </>
-          ) : (
-            <>
-              <DialogContentText>
-                {t('There seems to be no clusters configured…')}
-              </DialogContentText>
-              <DialogContentText>
-                {t('Please make sure you have at least one cluster configured.')}
-              </DialogContentText>
-            </>
-          )}
-        </React.Fragment>
-      ) : (
-        <ClusterList clusters={clusterList} onButtonClick={handleButtonClick} />
-      )}
-      {children}
-    </ClusterDialog>
+        {clusterList.length === 0 ? (
+          <React.Fragment>
+            {clusters === null ? (
+              <>
+                <DialogContentText>{t('Wait while fetching clusters…')}</DialogContentText>
+                <Loader title={t('Loading cluster information')} />
+              </>
+            ) : (
+              <>
+                <DialogContentText>
+                  {t('There seems to be no clusters configured…')}
+                </DialogContentText>
+                <DialogContentText>
+                  {t('Please make sure you have at least one cluster configured.')}
+                </DialogContentText>
+                {helpers.isElectron() && (
+                  <DialogContentText>
+                    {t('Or try running Headlamp with a different kube config.')}
+                  </DialogContentText>
+                )}
+              </>
+            )}
+          </React.Fragment>
+        ) : (
+          <ClusterList clusters={clusterList} onButtonClick={handleButtonClick} />
+        )}
+        {helpers.isElectron() ? (
+          <Box style={{ justifyContent: 'center', display: 'flex' }}>
+            <ActionButton
+              description={t('Load from a file')}
+              onClick={() => history.push(createRouteURL('loadKubeConfig'))}
+              icon="mdi:plus"
+            />
+          </Box>
+        ) : null}
+        {React.Children.toArray(children).length > 0 && (
+          <DialogActions>
+            <Grid container direction="row" justifyContent="space-between" alignItems="center">
+              {React.Children.toArray(children).map((child, index) => (
+                <Grid item key={index}>
+                  {child}
+                </Grid>
+              ))}
+            </Grid>
+          </DialogActions>
+        )}
+      </ClusterDialog>
+    </Box>
   );
 }
 

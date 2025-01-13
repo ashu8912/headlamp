@@ -1,16 +1,9 @@
-import { Plugin } from '@kinvolk/headlamp-plugin/types/plugin/index.d';
-import Registry from '@kinvolk/headlamp-plugin/types/plugin/registry.d';
+import { registerAppBarAction } from '@kinvolk/headlamp-plugin/lib';
 
-// const pluginLib = window.pluginLib;
-// const React = window.pluginLib.React;
-// const K8s = pluginLib.K8s.ResourceClasses;
-// const { Typography } = pluginLib.MuiCore;
+// Below are some imports you may want to use.
+//   See README.md for links to plugin development documentation.
+// import { SectionBox } from '@kinvolk/headlamp-plugin/lib/CommonComponents';
+// import { K8s } from '@kinvolk/headlamp-plugin/lib/K8s';
+// import { Typography } from '@mui/material';
 
-class MyPlugin implements Plugin {
-  initialize(register: Registry) {
-    console.log('$${name} initialized');
-    return true;
-  }
-}
-
-window.registerPlugin('$${name}', new MyPlugin());
+registerAppBarAction(<span>Hello</span>);
