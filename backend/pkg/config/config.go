@@ -193,6 +193,46 @@ func Parse(args []string) (*Config, error) {
 	return &config, nil
 }
 
+// MakeHeadlampKubeConfigsDir returns the default directory to store kubeconfig
+// files of clusters that are loaded in Headlamp.
+func MakeHeadlampKubeConfigsDir() (string, error) {
+	userConfigDir, err := os.UserConfigDir()
+
+	if err == nil {
+		kubeConfigDir := filepath.Join(userConfigDir, "Headlamp", "kubeconfigs")
+		if runtime.GOOS == "windows" {
+			// golang is wrong for config folder on windows.
+			// This matches env-paths and headlamp-plugin.
+			kubeConfigDir = filepath.Join(userConfigDir, "Headlamp", "Config", "kubeconfigs")
+		}
+
+		// Create the directory if it doesn't exist.
+		fileMode := 0o755
+
+		err = os.MkdirAll(kubeConfigDir, fs.FileMode(fileMode))
+		if err == nil {
+			return kubeConfigDir, nil
+		}
+	}
+
+	// if any error occurred, fallback to the current directory.
+	ex, err := os.Executable()
+	if err == nil {
+		return filepath.Dir(ex), nil
+	}
+
+	return "", fmt.Errorf("failed to get default kubeconfig persistence directory: %v", err)
+}
+
+func DefaultHeadlampKubeConfigFile() (string, error) {
+	kubeConfigDir, err := MakeHeadlampKubeConfigsDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(kubeConfigDir, "config"), nil
+}
+
 func flagset() *flag.FlagSet {
 	f := flag.NewFlagSet("config", flag.ContinueOnError)
 
@@ -223,7 +263,7 @@ func flagset() *flag.FlagSet {
 	// Telemetry flags.
 	f.String("service-name", "headlamp", "Service name for telemetry")
 	f.String("service-version", "0.30.0", "Service version for telemetry")
-	f.Bool("tracing-enabled", true, "Enable distributed tracing")
+	f.Bool("tracing-enabled", false, "Enable distributed tracing")
 	f.Bool("metrics-enabled", false, "Enable metrics collection")
 	f.String("otlp-endpoint", "localhost:4317", "OTLP collector endpoint")
 	f.Bool("use-otlp-http", false, "Use HTTP instead of gRPC for OTLP export")

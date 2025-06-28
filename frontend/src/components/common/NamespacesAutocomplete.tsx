@@ -30,7 +30,7 @@ import { loadClusterSettings } from '../../helpers/clusterSettings';
 import { useCluster, useClustersConf } from '../../lib/k8s';
 import Namespace from '../../lib/k8s/namespace';
 import { setNamespaceFilter } from '../../redux/filterSlice';
-import { useTypedSelector } from '../../redux/reducers/reducers';
+import { useTypedSelector } from '../../redux/hooks';
 
 /**
  * addQuery will add a query parameter to the URL using history API.
@@ -183,7 +183,7 @@ export function PureNamespacesAutocomplete({
             fullWidth
             InputLabelProps={{ shrink: true }}
             style={{ marginTop: 0 }}
-            placeholder={[...filter.namespaces.values()].length > 0 ? '' : 'Filter'}
+            placeholder={[...filter.namespaces.values()].length > 0 ? '' : t('Filter')}
           />
         </Box>
       )}
