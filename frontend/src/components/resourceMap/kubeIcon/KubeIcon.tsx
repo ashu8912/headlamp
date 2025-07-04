@@ -16,7 +16,7 @@
 
 import Box from '@mui/material/Box';
 import { alpha } from '@mui/system/colorManipulator';
-import { useTypedSelector } from '../../../redux/reducers/reducers';
+import { useTypedSelector } from '../../../redux/hooks';
 import CRoleIcon from './img/c-role.svg?react';
 import CmIcon from './img/cm.svg?react';
 import CrbIcon from './img/crb.svg?react';
@@ -102,7 +102,7 @@ const kindGroups = {
     'IngressClass',
     'NetworkPolicy',
   ]),
-  security: new Set(['ServiceAccount', 'Role', 'RoleBinding']),
+  security: new Set(['ServiceAccount', 'Role', 'RoleBinding', 'ClusterRole', 'ClusterRoleBinding']),
   configuration: new Set([
     'ConfigMap',
     'Secret',
