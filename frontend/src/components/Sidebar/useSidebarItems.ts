@@ -20,7 +20,7 @@ import { useTranslation } from 'react-i18next';
 import { isElectron } from '../../helpers/isElectron';
 import { useSelectedClusters } from '../../lib/k8s';
 import { createRouteURL } from '../../lib/router';
-import { useTypedSelector } from '../../redux/reducers/reducers';
+import { useTypedSelector } from '../../redux/hooks';
 import { DefaultSidebars, SidebarItemProps } from '.';
 
 /** Iterates over every entry in the list, including children */
@@ -120,6 +120,10 @@ export const useSidebarItems = (sidebarName: string = DefaultSidebars.IN_CLUSTER
           {
             name: 'nodes',
             label: t('glossary|Nodes'),
+          },
+          {
+            name: 'advancedSearch',
+            label: t('Advanced Search (Beta)'),
           },
         ],
       },
@@ -234,6 +238,10 @@ export const useSidebarItems = (sidebarName: string = DefaultSidebars.IN_CLUSTER
           {
             name: 'grpcroutes',
             label: t('glossary|GRPC Routes'),
+          },
+          {
+            name: 'referencegrants',
+            label: t('glossary|Reference Grants'),
           },
         ],
       },

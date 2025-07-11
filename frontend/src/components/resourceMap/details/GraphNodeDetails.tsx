@@ -16,6 +16,7 @@
 
 import Box from '@mui/material/Box';
 import Card from '@mui/material/Card';
+import { useDeferredValue } from 'react';
 import { useTranslation } from 'react-i18next';
 import ActionButton from '../../common/ActionButton';
 import { GraphNode } from '../graph/graphModel';
@@ -33,10 +34,10 @@ export interface GraphNodeDetailsProps {
  */
 export function GraphNodeDetails({ node, close }: GraphNodeDetailsProps) {
   const { t } = useTranslation();
+  const deferredNode = useDeferredValue(node);
 
-  if (!node) return null;
+  const hasContent = node && (node.detailsComponent || node.kubeObject);
 
-  const hasContent = node.detailsComponent || node.kubeObject;
   if (!hasContent) return null;
 
   return (
@@ -70,8 +71,24 @@ export function GraphNodeDetails({ node, close }: GraphNodeDetailsProps) {
         />
       </Box>
 
-      {node.detailsComponent && <node.detailsComponent node={node} />}
-      {node.kubeObject && <KubeObjectDetails resource={node.kubeObject} />}
+      <NodeDetailsRenderer node={deferredNode} />
     </Card>
+  );
+}
+
+function NodeDetailsRenderer({ node }: { node?: GraphNode }) {
+  const hasContent = node && (node.detailsComponent || node.kubeObject);
+  if (!hasContent) return null;
+
+  return (
+    <>
+      {node.detailsComponent && <node.detailsComponent node={node} />}
+      {node.kubeObject && (
+        <KubeObjectDetails
+          resource={node.kubeObject}
+          customResourceDefinition={node.customResourceDefinition}
+        />
+      )}
+    </>
   );
 }

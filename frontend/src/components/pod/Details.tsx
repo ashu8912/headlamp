@@ -486,6 +486,97 @@ export default function PodDetails(props: PodDetailsProps) {
   const [isAttached, setIsAttached] = React.useState(false);
   const dispatchHeadlampEvent = useEventCallback();
 
+  function prepareExtraInfo(item: Pod | null) {
+    let extraInfo: {
+      name: string;
+      value: React.ReactNode;
+      hideLabel?: boolean;
+    }[] = [];
+    if (item) {
+      extraInfo = [
+        {
+          name: t('State'),
+          value: makePodStatusLabel(item, false),
+        },
+        {
+          name: t('Node'),
+          value: item.spec.nodeName ? (
+            <Link
+              routeName="node"
+              params={{ name: item.spec.nodeName }}
+              activeCluster={item.cluster}
+            >
+              {item.spec.nodeName}
+            </Link>
+          ) : (
+            ''
+          ),
+        },
+        {
+          name: t('Service Account'),
+          value:
+            !!item.spec.serviceAccountName || !!item.spec.serviceAccount ? (
+              <Link
+                routeName="serviceAccount"
+                params={{
+                  namespace: item.metadata.namespace,
+                  name: item.spec.serviceAccountName || item.spec.serviceAccount,
+                }}
+                activeCluster={item.cluster}
+              >
+                {item.spec.serviceAccountName || item.spec.serviceAccount}
+              </Link>
+            ) : (
+              ''
+            ),
+        },
+        // Show Host IP only if Host IPs doesn't exist or is empty
+        ...(item.status.hostIPs && item.status.hostIPs.length > 0
+          ? []
+          : [
+              {
+                name: t('Host IP'),
+                value: item.status.hostIP ?? '',
+              },
+            ]),
+        // Always include Host IPs, but hide if empty
+        {
+          name: t('Host IPs'),
+          value: item.status.hostIPs
+            ? item.status.hostIPs.map((ipObj: { ip: string }) => ipObj.ip).join(', ')
+            : '',
+          hideLabel: !item.status.hostIPs || item.status.hostIPs.length === 0,
+        },
+        // Show Pod IP only if Pod IPs doesn't exist or is empty
+        ...(item.status.podIPs && item.status.podIPs.length > 0
+          ? []
+          : [
+              {
+                name: t('Pod IP'),
+                value: item.status.podIP ?? '',
+              },
+            ]),
+        // Always include Pod IPs, but hide if empty
+        {
+          name: t('Pod IPs'),
+          value: item.status.podIPs
+            ? item.status.podIPs.map((ipObj: { ip: string }) => ipObj.ip).join(', ')
+            : '',
+          hideLabel: !item.status.podIPs || item.status.podIPs.length === 0,
+        },
+        {
+          name: t('QoS Class'),
+          value: item.status.qosClass,
+        },
+        {
+          name: t('Priority'),
+          value: item.spec.priority,
+        },
+      ];
+    }
+    return extraInfo;
+  }
+
   return (
     <DetailsGrid
       resourceType={Pod}
@@ -520,21 +611,23 @@ export default function PodDetails(props: PodDetailsProps) {
             id: DefaultHeaderAction.POD_TERMINAL,
             action: (
               <AuthVisible item={item} authVerb="get" subresource="exec">
-                <ActionButton
-                  description={t('Terminal / Exec')}
-                  aria-label={t('terminal')}
-                  icon="mdi:console"
-                  onClick={() => {
-                    setShowTerminal(true);
-                    dispatchHeadlampEvent({
-                      type: HeadlampEventType.TERMINAL,
-                      data: {
-                        resource: item,
-                        status: EventStatus.CLOSED,
-                      },
-                    });
-                  }}
-                />
+                <AuthVisible item={item} authVerb="create" subresource="exec">
+                  <ActionButton
+                    description={t('Terminal / Exec')}
+                    aria-label={t('terminal')}
+                    icon="mdi:console"
+                    onClick={() => {
+                      setShowTerminal(true);
+                      dispatchHeadlampEvent({
+                        type: HeadlampEventType.TERMINAL,
+                        data: {
+                          resource: item,
+                          status: EventStatus.CLOSED,
+                        },
+                      });
+                    }}
+                  />
+                </AuthVisible>
               </AuthVisible>
             ),
           },
@@ -542,82 +635,29 @@ export default function PodDetails(props: PodDetailsProps) {
             id: DefaultHeaderAction.POD_ATTACH,
             action: (
               <AuthVisible item={item} authVerb="get" subresource="attach">
-                <ActionButton
-                  description={t('Attach')}
-                  aria-label={t('attach')}
-                  icon="mdi:connection"
-                  onClick={() => {
-                    setIsAttached(true);
-                    dispatchHeadlampEvent({
-                      type: HeadlampEventType.POD_ATTACH,
-                      data: {
-                        resource: item,
-                        status: EventStatus.OPENED,
-                      },
-                    });
-                  }}
-                />
+                <AuthVisible item={item} authVerb="create" subresource="attach">
+                  <ActionButton
+                    description={t('Attach')}
+                    aria-label={t('attach')}
+                    icon="mdi:connection"
+                    onClick={() => {
+                      setIsAttached(true);
+                      dispatchHeadlampEvent({
+                        type: HeadlampEventType.POD_ATTACH,
+                        data: {
+                          resource: item,
+                          status: EventStatus.OPENED,
+                        },
+                      });
+                    }}
+                  />
+                </AuthVisible>
               </AuthVisible>
             ),
           },
         ]
       }
-      extraInfo={item =>
-        item && [
-          {
-            name: t('State'),
-            value: makePodStatusLabel(item, false),
-          },
-          {
-            name: t('Node'),
-            value: item.spec.nodeName ? (
-              <Link
-                routeName="node"
-                params={{ name: item.spec.nodeName }}
-                activeCluster={item.cluster}
-              >
-                {item.spec.nodeName}
-              </Link>
-            ) : (
-              ''
-            ),
-          },
-          {
-            name: t('Service Account'),
-            value:
-              !!item.spec.serviceAccountName || !!item.spec.serviceAccount ? (
-                <Link
-                  routeName="serviceAccount"
-                  params={{
-                    namespace: item.metadata.namespace,
-                    name: item.spec.serviceAccountName || item.spec.serviceAccount,
-                  }}
-                  activeCluster={item.cluster}
-                >
-                  {item.spec.serviceAccountName || item.spec.serviceAccount}
-                </Link>
-              ) : (
-                ''
-              ),
-          },
-          {
-            name: t('Host IP'),
-            value: item.status.hostIP ?? '',
-          },
-          {
-            name: t('Pod IP'),
-            value: item.status.podIP ?? '',
-          },
-          {
-            name: t('QoS Class'),
-            value: item.status.qosClass,
-          },
-          {
-            name: t('Priority'),
-            value: item.spec.priority,
-          },
-        ]
-      }
+      extraInfo={item => prepareExtraInfo(item)}
       extraSections={item =>
         item && [
           {
@@ -640,7 +680,7 @@ export default function PodDetails(props: PodDetailsProps) {
             id: 'headlamp.pod-logs',
             section: (
               <PodLogViewer
-                key="logs"
+                key={'logs-' + item.metadata.uid}
                 open={showLogs}
                 item={item}
                 onClose={() => {

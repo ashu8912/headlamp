@@ -16,8 +16,9 @@
 
 import { Edge, EdgeMarker, Node } from '@xyflow/react';
 import { ElkExtendedEdge, ElkNode } from 'elkjs';
-import ELK from 'elkjs';
-import { forEachNode, GraphNode } from './graphModel';
+import ELK, { type ELK as ELKInterface } from 'elkjs/lib/elk-api';
+import elkWorker from 'elkjs/lib/elk-worker.min.js?url';
+import { forEachNode, getNodeWeight, GraphNode } from './graphModel';
 
 type ElkNodeWithData = Omit<ElkNode, 'edges'> & {
   type: string;
@@ -30,9 +31,15 @@ type ElkEdgeWithData = ElkExtendedEdge & {
   data: any;
 };
 
-const elk = new ELK({
-  defaultLayoutOptions: {},
-});
+let elk: ELKInterface | undefined;
+try {
+  elk = new ELK({
+    defaultLayoutOptions: {},
+    workerUrl: elkWorker,
+  });
+} catch (e) {
+  console.error('Failed to create ELK instance', e);
+}
 
 const layoutOptions = {
   nodeSize: {
@@ -41,24 +48,14 @@ const layoutOptions = {
   },
 };
 
-const partitionLayers = [
-  ['Deployment'],
-  ['ReplicaSet', 'ServiceAccount', 'CronJob', 'DaemonSet', 'StatefulSet'],
-  ['Job'],
-  ['Pod', 'RoleBinding'],
-  ['Service', 'NetworkPolicy', 'Role'],
-  ['Endpoints'],
-];
-
 /**
- * To increase readability of the graph we can sort nodes left-to-right
- * Where more 'owner' nodes like Deployment or ReplicaSet are on the left
+ * Determines the partition layer for a graph node based on its weight.
+ *
+ * @param node The graph node to determine the partition layer for
+ * @returns The ELK partition number (lower number is placed further left in layout, higher number is placed further right in layout)
  */
-function getPartitionLayer(node: GraphNode) {
-  if (!('kubeObject' in node)) return;
-  const kind = node.kubeObject?.kind;
-  const partitionLayer = partitionLayers.findIndex(layer => layer.includes(kind));
-  return partitionLayer > -1 ? partitionLayer : undefined;
+function getPartitionLayer(node: GraphNode): number {
+  return -getNodeWeight(node);
 }
 
 /**
@@ -71,36 +68,30 @@ function convertToElkNode(node: GraphNode, aspectRatio: number): ElkNodeWithData
   const isCollapsed = node.collapsed;
 
   const convertedEdges = node.edges
-    ? (node.edges
-        .map(edge => {
-          // Make sure source and target exists
-          let hasSource = false;
-          let hasTarget = false;
-          forEachNode(node, n => {
-            if (n.id === edge.source) {
-              hasSource = true;
-            }
-            if (n.id === edge.target) {
-              hasTarget = true;
-            }
-          });
+    ? (() => {
+        if (node.edges.length === 0) return [];
 
-          if (!hasSource || !hasTarget) {
-            return;
-          }
+        // Collect all node IDs in a Set for O(1) lookup
+        const nodeIds = new Set<string>();
+        forEachNode(node, n => nodeIds.add(n.id));
 
-          return {
-            type: 'edge',
-            id: edge.id,
-            sources: [edge.source],
-            targets: [edge.target],
-            label: edge.label,
-            labels: [{ text: edge.label, width: 70, height: 20 }],
-            hidden: false,
-            data: edge.data,
-          };
-        })
-        .filter(Boolean) as ElkEdgeWithData[])
+        return (
+          node.edges
+            // Make sure source and target exists
+            .filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+            .map(edge => ({
+              type: 'edge',
+              id: edge.id,
+              sources: [edge.source],
+              targets: [edge.target],
+              label: edge.label,
+              labels: [{ text: edge.label, width: 70, height: 20 }],
+              hidden: false,
+              data: edge.data,
+            }))
+            .filter(Boolean) as ElkEdgeWithData[]
+        );
+      })()
     : [];
 
   const elkNode: ElkNodeWithData = {
@@ -140,7 +131,7 @@ function convertToElkNode(node: GraphNode, aspectRatio: number): ElkNodeWithData
             'elk.rectpacking.packing.compaction.rowHeightReevaluation': 'true',
             'elk.edgeRouting': 'SPLINES',
             'elk.spacing.nodeNode': '20',
-            'elk.padding': '[left=24, top=24, right=24, bottom=24]',
+            'elk.padding': '[left=24, top=48, right=24, bottom=24]',
           };
     elkNode.edges = convertedEdges;
     elkNode.children =
@@ -242,6 +233,8 @@ function convertToReactFlowGraph(elkGraph: ElkNodeWithData) {
  */
 export const applyGraphLayout = (graph: GraphNode, aspectRatio: number) => {
   const elkGraph = convertToElkNode(graph, aspectRatio);
+
+  if (!elk) return Promise.resolve({ nodes: [], edges: [] });
 
   return elk
     .layout(elkGraph, {
