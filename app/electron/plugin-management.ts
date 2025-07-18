@@ -633,8 +633,15 @@ async function downloadExtraFiles(
       if (!value.output || !value.input || value.input === value.output) {
         continue;
       }
-      const outputFile = path.join(binDir, value.output);
+      let outputFile = path.join(binDir, value.output);
+      if (os.platform() === 'win32' && !value.output.endsWith('.js')) {
+        outputFile = path.join(binDir, value.output) + '.exe';
+      }
+
       const inputFile = path.join(binDir, value.input);
+      if (inputFile === outputFile) {
+        continue;
+      }
 
       fs.copyFileSync(inputFile, outputFile);
       fs.rmSync(inputFile);
