@@ -34,6 +34,7 @@ import (
 	"github.com/kubernetes-sigs/headlamp/backend/pkg/cache"
 	"github.com/kubernetes-sigs/headlamp/backend/pkg/kubeconfig"
 	"github.com/kubernetes-sigs/headlamp/backend/pkg/logger"
+	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -193,22 +194,71 @@ func StartPortForward(kubeConfigStore kubeconfig.ContextStore, cache cache.Cache
 	}
 }
 
+func checkPortForwardPermission(clientset *kubernetes.Clientset, namespace, podName string) error {
+	ctx := context.Background()
+
+	// Create a SelfSubjectAccessReview to check permissions
+	ssar := &authv1.SelfSubjectAccessReview{
+		Spec: authv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authv1.ResourceAttributes{
+				Namespace:   namespace,
+				Verb:        "create",
+				Group:       "", // core API group
+				Resource:    "pods",
+				Subresource: "portforward",
+				Name:        podName,
+			},
+		},
+	}
+
+	result, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, ssar, v1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to check permissions: %w", err)
+	}
+
+	if !result.Status.Allowed {
+		reason := "insufficient permissions"
+		if result.Status.Reason != "" {
+			reason = result.Status.Reason
+		}
+		return fmt.Errorf("access denied: %s", reason)
+	}
+
+	return nil
+}
+
 // getKubeClientAndConfig prepares Kubernetes clientset and REST config.
 // It takes a kubeconfig context and an optional bearer token.
 // It returns the configured clientset, REST config, or an error if setup fails.
 func getKubeClientAndConfig(kContext *kubeconfig.Context, token string) (*kubernetes.Clientset, *rest.Config, error) {
-	clientset, err := kContext.ClientSetWithToken(token)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create clientset: %w", err)
-	}
-
 	rConf, err := kContext.RESTConfig()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get REST config: %w", err)
 	}
 
+	// Check if exec provider is configured (common for EKS, AKS, GKE)
+	if rConf.ExecProvider != nil {
+		logger.Log(logger.LevelInfo, map[string]string{
+			"provider": rConf.ExecProvider.Command,
+		}, nil, "Using exec provider for authentication")
+
+		// Create clientset with exec provider config
+		clientset, err := kubernetes.NewForConfig(rConf)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create clientset with exec provider: %w", err)
+		}
+
+		return clientset, rConf, nil
+	}
+
+	// For non-exec based auth, use the token if provided
 	if token != "" {
 		rConf.BearerToken = token
+	}
+
+	clientset, err := kubernetes.NewForConfig(rConf)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create clientset: %w", err)
 	}
 
 	return clientset, rConf, nil
@@ -312,6 +362,7 @@ func handlePortForwardReadiness(
 	readyChan chan struct{},
 	errOut *bytes.Buffer,
 	logParams map[string]string,
+	forwardErrChan <-chan error,
 ) error {
 	select {
 	case <-readyChan:
@@ -333,6 +384,19 @@ func handlePortForwardReadiness(
 
 		portforwardstore(cache, *pfDetails)
 		logger.Log(logger.LevelInfo, logParams, nil, "Port forward ready and running.")
+
+	case err := <-forwardErrChan:
+		// ForwardPorts() failed before becoming ready
+		errMsg := err.Error()
+		logger.Log(logger.LevelError, logParams, err, "ForwardPorts error before ready")
+
+		pfDetails.Status = STOPPED
+		pfDetails.Error = errMsg
+
+		portforwardstore(cache, *pfDetails)
+		safeCloseChan(pfDetails.closeChan)
+
+		return err
 
 	case <-time.After(PortForwardReadinessTimeout):
 		errMsg := "timeout waiting for portforward to become ready"
@@ -380,6 +444,7 @@ func runAndMonitorPortForward(
 	logParams := map[string]string{
 		"id": pfDetails.ID, "pod": pfDetails.Pod, "port": pfDetails.Port, "targetPort": pfDetails.TargetPort,
 	}
+	forwardErrChan := make(chan error, 1)
 
 	go func() {
 		if err := forwarder.ForwardPorts(); err != nil {
@@ -389,6 +454,10 @@ func runAndMonitorPortForward(
 			pfDetails.Error = err.Error()
 
 			portforwardstore(cache, *pfDetails)
+			select {
+			case forwardErrChan <- err:
+			default:
+			}
 			safeCloseChan(pfDetails.closeChan)
 		} else {
 			logger.Log(logger.LevelInfo, logParams, nil, "ForwardPorts() exited.")
@@ -402,9 +471,10 @@ func runAndMonitorPortForward(
 				portforwardstore(cache, *pfDetails)
 			}
 		}
+		close(forwardErrChan)
 	}()
 
-	err := handlePortForwardReadiness(cache, pfDetails, readyChan, errOut, logParams)
+	err := handlePortForwardReadiness(cache, pfDetails, readyChan, errOut, logParams, forwardErrChan)
 	if err != nil {
 		return err
 	}
@@ -422,6 +492,12 @@ func startPortForward(kContext *kubeconfig.Context, cache cache.Cache[interface{
 	clientset, rConf, err := getKubeClientAndConfig(kContext, token)
 	if err != nil {
 		return fmt.Errorf("failed to setup Kubernetes client/config: %w", err)
+	}
+
+	// Check RBAC permissions before attempting port forward
+	err = checkPortForwardPermission(clientset, p.Namespace, p.Pod)
+	if err != nil {
+		return fmt.Errorf("permission check failed: %w", err)
 	}
 
 	portMapping := p.Port + ":" + p.TargetPort
