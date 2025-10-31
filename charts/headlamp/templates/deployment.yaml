@@ -8,7 +8,9 @@
 {{- $callbackURL := "" }}
 {{- $validatorClientID := "" }}
 {{- $validatorIssuerURL := "" }}
+{{- $usePKCE := "" }}
 {{- $useAccessToken := "" }}
+{{- $meUserInfoURL := "" }}
 
 # This block of code is used to extract the values from the env.
 # This is done to check if the values are non-empty and if they are, they are used in the deployment.yaml.
@@ -36,6 +38,12 @@
   {{- end }}
   {{- if eq .name "OIDC_USE_ACCESS_TOKEN" }}
     {{- $useAccessToken = .value | toString }}
+  {{- end }}
+  {{- if eq .name "OIDC_USE_PKCE" }}
+    {{- $usePKCE = .value | toString }}
+  {{- end }}
+  {{- if eq .name "ME_USER_INFO_URL" }}
+    {{- $meUserInfoURL = .value | toString }}
   {{- end }}
 {{- end }}
 
@@ -159,6 +167,20 @@ spec:
                   name: {{ $oidc.secret.name }}
                   key: useAccessToken
             {{- end }}
+            {{- if $oidc.usePKCE }}
+            - name: OIDC_USE_PKCE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $oidc.secret.name }}
+                  key: usePKCE
+            {{- end }}
+            {{- if $oidc.meUserInfoURL }}
+            - name: ME_USER_INFO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $oidc.secret.name }}
+                  key: meUserInfoURL
+            {{- end }}
             {{- else }}
             {{- if $oidc.clientID }}
             - name: OIDC_CLIENT_ID
@@ -191,6 +213,14 @@ spec:
             {{- if $oidc.useAccessToken }}
             - name: OIDC_USE_ACCESS_TOKEN
               value: {{ $oidc.useAccessToken }}
+            {{- end }}
+            {{- if $oidc.usePKCE }}
+            - name: OIDC_USE_PKCE
+              value: {{ $oidc.usePKCE }}
+            {{- end }}
+            {{- if $oidc.meUserInfoURL }}
+            - name: ME_USER_INFO_URL
+              value: {{ $oidc.meUserInfoURL }}
             {{- end }}
             {{- end }}
             {{- if .Values.env }}
@@ -245,6 +275,12 @@ spec:
             # Check if useAccessToken is non false either from env or oidc.config
             - "-oidc-use-access-token=$(OIDC_USE_ACCESS_TOKEN)"
             {{- end }}
+            {{- if or (eq ($oidc.usePKCE | toString) "true") (eq $usePKCE "true") }}
+            - "-oidc-use-pkce=$(OIDC_USE_PKCE)"
+            {{- end }}
+            {{- if or (ne $oidc.meUserInfoURL "") (ne $meUserInfoURL "") }}
+            - "-me-user-info-url=$(ME_USER_INFO_URL)"
+            {{- end }}
             {{- else }}
             - "-oidc-client-id=$(OIDC_CLIENT_ID)"
             - "-oidc-client-secret=$(OIDC_CLIENT_SECRET)"
@@ -261,6 +297,9 @@ spec:
             {{- if or (ne $oidc.validatorIssuerURL "") (ne $validatorIssuerURL "") }}
             # Check if validatorIssuerURL is non empty either from env or oidc.config
             - "-oidc-validator-idp-issuer-url=$(OIDC_VALIDATOR_ISSUER_URL)"
+            {{- end }}
+            {{- if or (ne $oidc.meUserInfoURL "") (ne $meUserInfoURL "") }}
+            - "-me-user-info-url=$(ME_USER_INFO_URL)"
             {{- end }}
             {{- end }}
             {{- with .Values.config.baseURL }}
@@ -309,13 +348,15 @@ spec:
           {{- end }}
           args:
             - |
-              echo "Installing headlamp-plugin globally..."
-              npm install -g @headlamp-k8s/pluginctl@{{ .Values.pluginsManager.version }}
-              echo "Installed headlamp-plugin successfully."
               if [ -f "/config/plugin.yml" ]; then
                 echo "Installing plugins from config..."
                 cat /config/plugin.yml
-                pluginctl install --config /config/plugin.yml --folderName {{ .Values.config.pluginsDir }} --watch
+                # Use a writable cache directory
+                export NPM_CONFIG_CACHE=/tmp/npm-cache
+                # Use a writable config directory
+                export NPM_CONFIG_USERCONFIG=/tmp/npm-userconfig
+                mkdir -p /tmp/npm-cache /tmp/npm-userconfig
+                npx --yes @headlamp-k8s/pluginctl@{{ .Values.pluginsManager.version }} install --config /config/plugin.yml --folderName {{ .Values.config.pluginsDir }} --watch
               fi
           volumeMounts:
             - name: plugins-dir

@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -34,6 +35,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -79,11 +81,20 @@ type HeadlampConfig struct {
 	oidcUseAccessToken        bool
 	oidcSkipTLSVerify         bool
 	oidcCACert                string
+	oidcUsePKCE               bool
 	cache                     cache.Cache[interface{}]
 	multiplexer               *Multiplexer
 	telemetryConfig           cfg.Config
 	oidcScopes                []string
 	telemetryHandler          *telemetry.RequestHandler
+	// meUsernamePaths lists the JMESPath expressions tried for the username in /clusters/{cluster}/me.
+	meUsernamePaths string
+	// meEmailPaths lists the JMESPath expressions tried for the email in /clusters/{cluster}/me.
+	meEmailPaths string
+	// meGroupsPaths lists the JMESPath expressions tried for the groups in /clusters/{cluster}/me.
+	meGroupsPaths string
+	// MeUserInfoURL is the URL to fetch additional user info for the /me endpoint. /oauth2/userinfo
+	MeUserInfoURL string
 }
 
 const DrainNodeCacheTTL = 20 // seconds
@@ -111,9 +122,11 @@ type clientConfig struct {
 }
 
 type OauthConfig struct {
-	Config   *oauth2.Config
-	Verifier *oidc.IDTokenVerifier
-	Ctx      context.Context
+	Config       *oauth2.Config
+	Verifier     *oidc.IDTokenVerifier
+	Ctx          context.Context
+	CodeVerifier string // PKCE code verifier
+	Cluster      string // cluster context name this is associated with
 }
 
 // returns True if a file exists.
@@ -477,6 +490,16 @@ func createHeadlampHandler(config *HeadlampConfig) http.Handler {
 		portforward.GetPortForwardByID(config.cache, w, r)
 	}).Methods("GET")
 
+	// Expose user info so the frontend can show the current user in the top bar using the per-cluster auth cookie.
+	r.HandleFunc("/clusters/{clusterName}/me",
+		auth.HandleMe(auth.MeHandlerOptions{
+			UsernamePaths: config.meUsernamePaths,
+			EmailPaths:    config.meEmailPaths,
+			GroupsPaths:   config.meGroupsPaths,
+			UserInfoURL:   config.MeUserInfoURL,
+		}),
+	).Methods("GET")
+
 	config.handleClusterRequests(r)
 
 	r.HandleFunc("/externalproxy", func(w http.ResponseWriter, r *http.Request) {
@@ -600,7 +623,10 @@ func createHeadlampHandler(config *HeadlampConfig) http.Handler {
 
 	config.addClusterSetupRoute(r)
 
-	oauthRequestMap := make(map[string]*OauthConfig)
+	var (
+		oauthRequestMap = make(map[string]*OauthConfig)
+		oauthMu         sync.Mutex
+	)
 
 	r.HandleFunc("/oidc", func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
@@ -665,12 +691,38 @@ func createHeadlampHandler(config *HeadlampConfig) http.Handler {
 			RedirectURL:  getOidcCallbackURL(r, config),
 			Scopes:       append([]string{oidc.ScopeOpenID}, oidcAuthConfig.Scopes...),
 		}
-		/* we encode the cluster to base64 and set it as state so that when getting redirected
-		by oidc we can use this state value to get cluster name
-		*/
-		state := base64.StdEncoding.EncodeToString([]byte(cluster))
-		oauthRequestMap[state] = &OauthConfig{Config: oauthConfig, Verifier: verifier, Ctx: ctx}
-		http.Redirect(w, r, oauthConfig.AuthCodeURL(state), http.StatusFound)
+
+		// state should be unique per request, cryptographically secure random, url safe
+		state := func() string {
+			b := make([]byte, 32)
+			if _, err := rand.Read(b); err != nil {
+				panic(err)
+			}
+			return base64.RawURLEncoding.EncodeToString(b)
+		}()
+
+		entry := &OauthConfig{
+			Config:   oauthConfig,
+			Verifier: verifier,
+			Ctx:      ctx,
+			Cluster:  cluster,
+		}
+
+		var authURL string
+
+		if config.oidcUsePKCE {
+			entry.CodeVerifier = oauth2.GenerateVerifier()
+			authURL = oauthConfig.AuthCodeURL(state, oauth2.S256ChallengeOption(entry.CodeVerifier))
+		} else {
+			authURL = oauthConfig.AuthCodeURL(state)
+		}
+
+		// Store the request config keyed by state for callback handling
+		oauthMu.Lock()
+		oauthRequestMap[state] = entry
+		oauthMu.Unlock()
+
+		http.Redirect(w, r, authURL, http.StatusFound)
 	}).Queries("cluster", "{cluster}")
 
 	r.HandleFunc("/drain-node", config.handleNodeDrain).Methods("POST")
@@ -680,14 +732,6 @@ func createHeadlampHandler(config *HeadlampConfig) http.Handler {
 	r.HandleFunc("/oidc-callback", func(w http.ResponseWriter, r *http.Request) {
 		state := r.URL.Query().Get("state")
 
-		decodedState, err := base64.StdEncoding.DecodeString(state)
-		if err != nil {
-			logger.Log(logger.LevelError, nil, err, "failed to decode state")
-			http.Error(w, "wrong state set, invalid request "+err.Error(), http.StatusBadRequest)
-
-			return
-		}
-
 		if state == "" {
 			logger.Log(logger.LevelError, nil, err, "invalid request state is empty")
 			http.Error(w, "invalid request state is empty", http.StatusBadRequest)
@@ -695,78 +739,107 @@ func createHeadlampHandler(config *HeadlampConfig) http.Handler {
 			return
 		}
 
-		//nolint:nestif
-		if oauthConfig, ok := oauthRequestMap[state]; ok {
-			oauth2Token, err := oauthConfig.Config.Exchange(oauthConfig.Ctx, r.URL.Query().Get("code"))
-			if err != nil {
-				logger.Log(logger.LevelError, nil, err, "failed to exchange token")
-				http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
+		oauthMu.Lock()
 
-				return
-			}
+		oauthConfig, ok := oauthRequestMap[state]
+		if ok {
+			// We have a copy of the oauthConfig, we can delete the map entry now
+			delete(oauthRequestMap, state)
+		}
 
-			tokenType := "id_token"
-			if config.oidcUseAccessToken {
-				tokenType = "access_token"
-			}
+		oauthMu.Unlock()
 
-			rawUserToken, ok := oauth2Token.Extra(tokenType).(string)
-			if !ok {
-				logger.Log(logger.LevelError, nil, err, fmt.Sprintf("no %s field in oauth2 token", tokenType))
-				http.Error(w, fmt.Sprintf("No %s field in oauth2 token.", tokenType), http.StatusInternalServerError)
-
-				return
-			}
-
-			if err := config.cache.Set(context.Background(),
-				fmt.Sprintf("oidc-token-%s", rawUserToken), oauth2Token.RefreshToken); err != nil {
-				logger.Log(logger.LevelError, nil, err, "failed to cache refresh token")
-				http.Error(w, "Failed to cache refresh token: "+err.Error(), http.StatusInternalServerError)
-
-				return
-			}
-
-			idToken, err := oauthConfig.Verifier.Verify(oauthConfig.Ctx, rawUserToken)
-			if err != nil {
-				logger.Log(logger.LevelError, nil, err, "failed to verify ID Token")
-				http.Error(w, "Failed to verify ID Token: "+err.Error(), http.StatusInternalServerError)
-
-				return
-			}
-
-			resp := struct {
-				OAuth2Token   *oauth2.Token
-				IDTokenClaims *json.RawMessage // ID Token payload is just JSON.
-			}{oauth2Token, new(json.RawMessage)}
-
-			if err := idToken.Claims(&resp.IDTokenClaims); err != nil {
-				logger.Log(logger.LevelError, nil, err, "failed to get id token claims")
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-
-				return
-			}
-
-			var redirectURL string
-			if config.DevMode {
-				redirectURL = "http://localhost:3000/"
-			} else {
-				redirectURL = "/"
-			}
-
-			baseURL := strings.Trim(config.BaseURL, "/")
-			if baseURL != "" {
-				redirectURL += baseURL + "/"
-			}
-
-			// Set auth cookie
-			auth.SetTokenCookie(w, r, string(decodedState), rawUserToken, config.BaseURL)
-
-			redirectURL += fmt.Sprintf("auth?cluster=%1s", decodedState)
-			http.Redirect(w, r, redirectURL, http.StatusSeeOther)
-		} else {
+		if !ok {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
+
+		var oauth2Token *oauth2.Token
+
+		var err error
+
+		// Exchange authorization code for token, with or without PKCE
+		if config.oidcUsePKCE && oauthConfig.CodeVerifier != "" {
+			// Use PKCE code verifier for token exchange
+			oauth2Token, err = oauthConfig.Config.Exchange(
+				oauthConfig.Ctx,
+				r.URL.Query().Get("code"),
+				oauth2.SetAuthURLParam("code_verifier", oauthConfig.CodeVerifier),
+			)
+		} else {
+			// Standard token exchange without PKCE
+			oauth2Token, err = oauthConfig.Config.Exchange(
+				oauthConfig.Ctx,
+				r.URL.Query().Get("code"),
+			)
+		}
+
+		if err != nil {
+			logger.Log(logger.LevelError, nil, err, "failed to exchange token")
+			http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
+
+			return
+		}
+
+		tokenType := "id_token"
+		if config.oidcUseAccessToken {
+			tokenType = "access_token"
+		}
+
+		rawUserToken, ok := oauth2Token.Extra(tokenType).(string)
+		if !ok {
+			logger.Log(logger.LevelError, nil, err, fmt.Sprintf("no %s field in oauth2 token", tokenType))
+			http.Error(w, fmt.Sprintf("No %s field in oauth2 token.", tokenType), http.StatusInternalServerError)
+
+			return
+		}
+
+		if err := config.cache.Set(context.Background(),
+			fmt.Sprintf("oidc-token-%s", rawUserToken), oauth2Token.RefreshToken); err != nil {
+			logger.Log(logger.LevelError, nil, err, "failed to cache refresh token")
+			http.Error(w, "Failed to cache refresh token: "+err.Error(), http.StatusInternalServerError)
+
+			return
+		}
+
+		idToken, err := oauthConfig.Verifier.Verify(oauthConfig.Ctx, rawUserToken)
+		if err != nil {
+			logger.Log(logger.LevelError, nil, err, "failed to verify ID Token")
+			http.Error(w, "Failed to verify ID Token: "+err.Error(), http.StatusInternalServerError)
+
+			return
+		}
+
+		resp := struct {
+			OAuth2Token   *oauth2.Token
+			IDTokenClaims *json.RawMessage // ID Token payload is just JSON.
+		}{oauth2Token, new(json.RawMessage)}
+
+		if err := idToken.Claims(&resp.IDTokenClaims); err != nil {
+			logger.Log(logger.LevelError, nil, err, "failed to get id token claims")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+
+			return
+		}
+
+		var redirectURL string
+		if config.DevMode {
+			redirectURL = "http://localhost:3000/"
+		} else {
+			redirectURL = "/"
+		}
+
+		baseURL := strings.Trim(config.BaseURL, "/")
+		if baseURL != "" {
+			redirectURL += baseURL + "/"
+		}
+
+		// Set auth cookie
+		auth.SetTokenCookie(w, r, oauthConfig.Cluster, rawUserToken, config.BaseURL)
+
+		redirectURL += fmt.Sprintf("auth?cluster=%1s", oauthConfig.Cluster)
+
+		http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 	})
 
 	// Serve the frontend if needed
